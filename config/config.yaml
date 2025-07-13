@@ -1,0 +1,172 @@
+# QNG Agent 配置文件
+
+# 服务器配置
+server:
+  host: "0.0.0.0"
+  port: 8080
+  mode: "release"
+
+# 日志配置
+logging:
+  level: "info"
+  format: "json"
+  output: "stdout"
+  file: "logs/qng_agent.log"
+
+# LLM配置
+llm:
+  provider: "openai"  # openai, gemini, anthropic
+  openai:
+    api_key: "${OPENAI_API_KEY}"
+    model: "gpt-4"
+    base_url: "https://api.openai.com/v1"
+    timeout: 30
+    max_tokens: 2000
+  gemini:
+    api_key: "AIzaSyAkegfnlZ90z5TOINMPViATD7gTq7BLmAw"
+    model: "gemini-1.5-flash"
+    timeout: 30
+  anthropic:
+    api_key: "${ANTHROPIC_API_KEY}"
+    model: "claude-3-5-sonnet-20241022"
+    timeout: 30
+
+# MCP配置
+mcp:
+  mode: "distributed"  # standalone, distributed
+  host: "localhost"
+  port: 8081
+  timeout: 30
+  
+  # QNG MCP服务器配置
+  qng:
+    enabled: true
+    host: "localhost"
+    port: 8082
+    timeout: 30
+    chain:
+      enabled: true
+      network: "mainnet"
+      rpc_url: "https://mainnet.qng.org"
+      langgraph:
+        enabled: true
+        nodes: ["task_decomposer", "swap_executor", "stake_executor", "signature_validator", "result_aggregator"]
+      llm:
+        provider: "openai"
+        openai:
+          api_key: "${OPENAI_API_KEY}"
+          model: "gpt-4"
+          timeout: 30
+  
+  # MetaMask MCP服务器配置
+  metamask:
+    enabled: true
+    host: "localhost"
+    port: 8083
+    timeout: 30
+    network: "Ethereum Mainnet"
+    chain_id: "1"
+
+# 智能体配置
+agent:
+  name: "QNG Agent"
+  version: "1.0.0"
+  workflow:
+    timeout: 300
+    max_retries: 3
+    retry_delay: 5
+  polling:
+    interval: 2
+    timeout: 30
+    max_attempts: 15
+  llm:
+    provider: "openai"
+    openai:
+      api_key: "${OPENAI_API_KEY}"
+      model: "gpt-4"
+      timeout: 30
+  mcp:
+    host: "localhost"
+    port: 8081
+    timeout: 30
+    qng:
+      enabled: true
+      host: "localhost"
+      port: 8082
+      timeout: 30
+    metamask:
+      enabled: true
+      host: "localhost"
+      port: 8083
+      timeout: 30
+      network: "Ethereum Mainnet"
+      chain_id: "1"
+
+# 前端配置
+frontend:
+  enabled: true
+  host: "localhost"
+  port: 3000
+  build_dir: "./frontend/build"
+  api:
+    base_url: "http://localhost:8080/api"
+    timeout: 30
+  websocket:
+    enabled: true
+    url: "ws://localhost:8080/ws"
+
+# 数据库配置
+database:
+  driver: "sqlite"  # sqlite, postgres, mysql
+  sqlite:
+    path: "data/qng_agent.db"
+  postgres:
+    host: "localhost"
+    port: 5432
+    user: "qng_agent"
+    password: "password"
+    database: "qng_agent"
+    ssl_mode: "disable"
+  mysql:
+    host: "localhost"
+    port: 3306
+    user: "qng_agent"
+    password: "password"
+    database: "qng_agent"
+
+# 缓存配置
+cache:
+  driver: "memory"  # memory, redis
+  redis:
+    host: "localhost"
+    port: 6379
+    password: ""
+    database: 0
+    timeout: 5
+
+# 安全配置
+security:
+  jwt_secret: "${JWT_SECRET}"
+  jwt_expiry: "24h"
+  cors:
+    enabled: true
+    origins: ["http://localhost:3000", "http://localhost:8080"]
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    headers: ["Content-Type", "Authorization"]
+
+# 监控配置
+monitoring:
+  enabled: true
+  metrics:
+    enabled: true
+    port: 9090
+  health_check:
+    enabled: true
+    port: 8080
+    path: "/health"
+
+# 开发配置
+development:
+  hot_reload: true
+  debug: true
+  cors: true 

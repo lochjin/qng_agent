@@ -1,146 +1,125 @@
 package llm
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
+	"qng_agent/internal/config"
+	"strings"
+	"time"
 )
 
 type GeminiClient struct {
-	apiKey  string
-	baseURL string
-	model   string
-	client  *http.Client
+	config config.GeminiConfig
+	client *http.Client
 }
 
 type GeminiRequest struct {
-	Contents         []GeminiContent         `json:"contents"`
-	GenerationConfig *GeminiGenerationConfig `json:"generationConfig,omitempty"`
-}
-
-type GeminiContent struct {
-	Role  string       `json:"role"`
-	Parts []GeminiPart `json:"parts"`
-}
-
-type GeminiPart struct {
-	Text string `json:"text"`
-}
-
-type GeminiGenerationConfig struct {
-	Temperature     float64 `json:"temperature,omitempty"`
-	TopP            float64 `json:"topP,omitempty"`
-	TopK            int     `json:"topK,omitempty"`
-	MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
+	Contents []struct {
+		Parts []struct {
+			Text string `json:"text"`
+		} `json:"parts"`
+	} `json:"contents"`
 }
 
 type GeminiResponse struct {
-	Candidates []GeminiCandidate `json:"candidates"`
+	Candidates []struct {
+		Content struct {
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"content"`
+	} `json:"candidates"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
 }
 
-type GeminiCandidate struct {
-	Content GeminiContent `json:"content"`
-}
-
-func NewGeminiClient(configs map[string]string) (*GeminiClient, error) {
-	apiKey := configs["gemini_api_key"]
-	if apiKey == "" {
-		return nil, fmt.Errorf("gemini_api_key is required")
+func NewGeminiClient(config config.GeminiConfig) (Client, error) {
+	if config.APIKey == "" {
+		return NewMockClient(), nil
 	}
 
-	baseURL := configs["gemini_base_url"]
-	if baseURL == "" {
-		baseURL = "https://generativelanguage.googleapis.com/v1beta"
-	}
-
-	model := configs["model"]
-	if model == "" {
-		model = "gemini-pro"
+	client := &http.Client{
+		Timeout: time.Duration(config.Timeout) * time.Second,
 	}
 
 	return &GeminiClient{
-		apiKey:  apiKey,
-		baseURL: baseURL,
-		model:   model,
-		client:  &http.Client{},
+		config: config,
+		client: client,
 	}, nil
 }
 
 func (c *GeminiClient) Chat(ctx context.Context, messages []Message) (string, error) {
-	// 转换消息格式
-	contents := make([]GeminiContent, 0, len(messages))
-	for _, msg := range messages {
-		// Gemini使用不同的角色映射
-		role := msg.Role
-		if role == "assistant" {
-			role = "model"
-		}
+	if c.config.APIKey == "" {
+		// 如果没有API密钥，使用模拟客户端
+		mockClient := NewMockClient()
+		return mockClient.Chat(ctx, messages)
+	}
 
-		contents = append(contents, GeminiContent{
-			Role: role,
-			Parts: []GeminiPart{
+	// 转换消息格式
+	var contents []struct {
+		Parts []struct {
+			Text string `json:"text"`
+		} `json:"parts"`
+	}
+
+	for _, msg := range messages {
+		contents = append(contents, struct {
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		}{
+			Parts: []struct {
+				Text string `json:"text"`
+			}{
 				{Text: msg.Content},
 			},
 		})
 	}
 
-	// 构建请求
-	request := GeminiRequest{
+	requestBody := GeminiRequest{
 		Contents: contents,
-		GenerationConfig: &GeminiGenerationConfig{
-			Temperature:     0.7,
-			TopP:            0.9,
-			TopK:            40,
-			MaxOutputTokens: 2048,
-		},
 	}
 
-	// 序列化请求
-	requestBody, err := json.Marshal(request)
+	jsonData, err := json.Marshal(requestBody)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// 创建HTTP请求
-	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", c.baseURL, c.model, c.apiKey)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(requestBody))
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", 
+		c.config.Model, c.config.APIKey)
+	
+	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(jsonData)))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 
-	// 发送请求
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// 读取响应
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read response: %w", err)
-	}
-
-	// 检查状态码
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Gemini API request failed with status %d: %s", resp.StatusCode, string(responseBody))
-	}
-
-	// 解析响应
 	var response GeminiResponse
-	if err := json.Unmarshal(responseBody, &response); err != nil {
-		return "", fmt.Errorf("failed to unmarshal response: %w", err)
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return "", fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	// 提取响应内容
-	if len(response.Candidates) > 0 && len(response.Candidates[0].Content.Parts) > 0 {
-		return response.Candidates[0].Content.Parts[0].Text, nil
+	if response.Error != nil {
+		return "", fmt.Errorf("Gemini API error: %s", response.Error.Message)
 	}
 
-	return "", fmt.Errorf("no response content from Gemini")
+	if len(response.Candidates) == 0 {
+		return "", fmt.Errorf("no response from Gemini")
+	}
+
+	if len(response.Candidates[0].Content.Parts) == 0 {
+		return "", fmt.Errorf("no content in Gemini response")
+	}
+
+	return response.Candidates[0].Content.Parts[0].Text, nil
 }

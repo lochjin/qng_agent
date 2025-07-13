@@ -19,9 +19,9 @@ func main() {
 	log.Println("=== QNG Chain 服务启动 ===")
 
 	// 加载配置
-	cfg, err := config.Load()
-	if err != nil {
-		log.Fatal("Failed to load config:", err)
+	cfg := config.LoadConfig("config/config.yaml")
+	if cfg == nil {
+		log.Fatal("Failed to load config")
 	}
 
 	// 获取服务注册中心
@@ -49,8 +49,8 @@ func main() {
 	}
 
 	// 初始化QNG Chain
-	chain := qng.NewChain(cfg.QNG)
-	log.Printf("🔗 初始化QNG链，RPC: %s", cfg.QNG.ChainRPC)
+	chain := qng.NewChain(cfg.MCP.QNG)
+	log.Printf("🔗 初始化QNG链，RPC: %s", cfg.MCP.QNG.Chain.RPCURL)
 
 	// 启动Chain服务
 	if err := chain.Start(); err != nil {
@@ -99,9 +99,9 @@ func main() {
 		api.GET("/status", func(c *gin.Context) {
 			status := map[string]interface{}{
 				"running":       true,
-				"chain_rpc":     cfg.QNG.ChainRPC,
-				"graph_nodes":   cfg.QNG.GraphNodes,
-				"poll_interval": cfg.QNG.PollInterval,
+				"chain_rpc":     cfg.MCP.QNG.Chain.RPCURL,
+				"graph_nodes":   len(cfg.MCP.QNG.Chain.LangGraph.Nodes),
+				"poll_interval": 5000, // 默认5秒
 				"timestamp":     time.Now().Unix(),
 			}
 
@@ -180,21 +180,22 @@ func main() {
 	// 启动状态监控
 	log.Println("🎯 启动状态监控...")
 	go func() {
-		ticker := time.NewTicker(time.Duration(cfg.QNG.PollInterval) * time.Millisecond)
+		pollInterval := 5000 // 默认5秒
+		ticker := time.NewTicker(time.Duration(pollInterval) * time.Millisecond)
 		defer ticker.Stop()
 
 		for {
 			select {
 			case <-ticker.C:
-				log.Printf("📊 链状态监控 - 间隔: %dms", cfg.QNG.PollInterval)
+				log.Printf("📊 链状态监控 - 间隔: %dms", pollInterval)
 				// 这里可以添加更多的监控逻辑
 			}
 		}
 	}()
 
 	log.Println("✅ QNG Chain服务已启动")
-	log.Printf("📡 监控间隔: %dms", cfg.QNG.PollInterval)
-	log.Printf("🌐 图节点数: %d", cfg.QNG.GraphNodes)
+	log.Printf("📡 监控间隔: %dms", 5000)
+	log.Printf("🌐 图节点数: %d", len(cfg.MCP.QNG.Chain.LangGraph.Nodes))
 
 	// 启动健康检查
 	registry.StartHealthCheck()

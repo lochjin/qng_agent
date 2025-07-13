@@ -12,11 +12,11 @@ llm:
     ollama_base_url: "http://localhost:11434"
     
     # Gemini 配置
-    gemini_api_key: "YOUR_GEMINI_API_KEY"
+    gemini_api_key: "AIzaSyAkegfnlZ90z5TOINMPViATD7gTq7BLmAw"
     gemini_base_url: "https://generativelanguage.googleapis.com/v1beta"
     
     # 通用配置
-    model: "gpt-4"  # 根据provider选择对应模型
+    model: "gemini-1.5-flash"  # 根据provider选择对应模型
 
 mcp:
   timeout: 30

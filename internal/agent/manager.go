@@ -12,9 +12,9 @@ import (
 )
 
 type Manager struct {
-	mcpManager mcp.MCPManager
-	llmClient  llm.Client
-	sessions   map[string]*Session
+	mcpServer *mcp.Server
+	llmClient llm.Client
+	sessions  map[string]*Session
 }
 
 type Session struct {
@@ -43,16 +43,16 @@ type ProcessResponse struct {
 	WorkflowID string `json:"workflow_id,omitempty"`
 }
 
-func NewManager(mcpManager mcp.MCPManager, llmConfig config.LLMConfig) *Manager {
+func NewManager(mcpServer *mcp.Server, llmConfig config.LLMConfig) *Manager {
 	llmClient, err := llm.NewClient(llmConfig)
 	if err != nil {
 		log.Fatal("Failed to create LLM client:", err)
 	}
 
 	return &Manager{
-		mcpManager: mcpManager,
-		llmClient:  llmClient,
-		sessions:   make(map[string]*Session),
+		mcpServer: mcpServer,
+		llmClient: llmClient,
+		sessions:  make(map[string]*Session),
 	}
 }
 
@@ -93,11 +93,17 @@ func (m *Manager) ProcessMessage(ctx context.Context, req ProcessRequest) (*Proc
 	// 需要工具调用
 	if toolInfo.IsQNGWorkflow {
 		// 调用QNG工作流
-		workflowID, err := m.mcpManager.CallQNGWorkflow(ctx, req.Message)
+		log.Printf("调用QNG工作流，消息: %s", req.Message)
+		result, err := m.mcpServer.Call(ctx, "qng", "execute_workflow", map[string]any{
+			"message": req.Message,
+		})
 		if err != nil {
+			log.Printf("QNG工作流调用失败: %v", err)
 			return nil, fmt.Errorf("QNG workflow call failed: %w", err)
 		}
-
+		resMap, _ := result.(map[string]any)
+		workflowID, _ := resMap["workflow_id"].(string)
+		log.Printf("QNG工作流启动成功，ID: %s", workflowID)
 		return &ProcessResponse{
 			Response:   "任务正在执行中，请等待...",
 			NeedAction: true,
@@ -106,13 +112,15 @@ func (m *Manager) ProcessMessage(ctx context.Context, req ProcessRequest) (*Proc
 		}, nil
 	}
 
-	// 调用其他MCP工具
-	result, err := m.mcpManager.CallTool(ctx, toolInfo.ServerName, toolInfo.ToolName, toolInfo.Parameters)
+	// 调用其它MCP工具
+	log.Printf("调用MCP工具，服务器: %s, 工具: %s", toolInfo.ServerName, toolInfo.ToolName)
+	result, err := m.mcpServer.Call(ctx, toolInfo.ServerName, toolInfo.ToolName, toolInfo.Parameters)
 	if err != nil {
+		log.Printf("MCP工具调用失败: %v", err)
 		return nil, fmt.Errorf("MCP tool call failed: %w", err)
 	}
 
-	// 将结果传给LLM进行格式化
+	// 将结果传给LLM格式化
 	llmMessages := m.buildLLMMessages(session)
 	llmMessages = append(llmMessages, llm.Message{
 		Role:    "system",
@@ -213,11 +221,19 @@ func (m *Manager) buildLLMMessages(session *Session) []llm.Message {
 }
 
 func (m *Manager) GetWorkflowStatus(ctx context.Context, workflowID string) (*mcp.WorkflowStatus, error) {
-	return m.mcpManager.GetQNGWorkflowStatus(ctx, workflowID)
+	result, err := m.mcpServer.Call(ctx, "qng", "get_session_status", map[string]any{"session_id": workflowID})
+	if err != nil {
+		return nil, err
+	}
+	status, ok := result.(*mcp.WorkflowStatus)
+	if !ok {
+		return nil, fmt.Errorf("invalid workflow status type: %T", result)
+	}
+	return status, nil
 }
 
 func (m *Manager) ContinueWorkflowWithSignature(ctx context.Context, workflowID, signature string) (any, error) {
-	return m.mcpManager.SubmitWorkflowSignature(ctx, workflowID, signature)
+	return m.mcpServer.Call(ctx, "qng", "submit_signature", map[string]any{"session_id": workflowID, "signature": signature})
 }
 
 func (m *Manager) GetCapabilities() map[string]any {

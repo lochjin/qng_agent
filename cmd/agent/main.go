@@ -56,13 +56,38 @@ func main() {
 	log.Println("=== QNG Agent 管理器启动 ===")
 
 	// 加载配置
-	cfg, err := config.Load()
-	if err != nil {
-		log.Fatal("Failed to load config:", err)
+	cfg := config.LoadConfig("config/config.yaml")
+	if cfg == nil {
+		log.Fatal("Failed to load config")
 	}
 
 	// 获取服务注册中心
 	registry := service.GetRegistry()
+
+	// 注册MCP服务到注册中心（如果不存在）
+	mcpService := &service.ServiceInfo{
+		Name:    "mcp",
+		Address: "localhost",
+		Port:    9091, // MCP服务端口
+		Status:  "running",
+		LastSeen: time.Now(),
+		Endpoints: []string{
+			"/api/mcp/call",
+			"/api/mcp/qng/workflow",
+			"/api/mcp/capabilities",
+		},
+		Metadata: map[string]string{
+			"type":    "mcp_service",
+			"version": "1.0.0",
+		},
+	}
+
+	// 尝试注册MCP服务
+	if err := registry.RegisterService(mcpService); err != nil {
+		log.Printf("Warning: Failed to register MCP service: %v", err)
+	} else {
+		log.Println("✅ MCP服务已注册到服务注册中心")
+	}
 
 	// 注册自己为Agent服务
 	agentService := &service.ServiceInfo{
@@ -89,20 +114,35 @@ func main() {
 
 	// 等待依赖服务启动
 	log.Println("⏳ 等待依赖服务启动...")
-	waitForServices([]string{"mcp", "chain"}, registry, 30*time.Second)
+	log.Println("📋 服务依赖说明:")
+	log.Println("  - Agent服务依赖MCP服务")
+	log.Println("  - MCP服务内部管理QNG和MetaMask服务")
+	log.Println("  - Chain功能由QNG服务提供")
+	waitForServices([]string{"mcp"}, registry, 30*time.Second)
 
-	// 创建MCP客户端（连接到独立的MCP服务）
-	mcpClient := service.NewHTTPServiceClient("mcp")
-
-	// 初始化分布式MCP Manager（用于与远程MCP服务通信）
-	mcpManager := mcp.NewDistributedManager(mcpClient)
+	// 创建MCP服务器
+	mcpServer := mcp.NewServer(cfg.MCP)
 
 	// 初始化Agent管理器
-	agentManager := agent.NewManager(mcpManager, cfg.LLM)
+	agentManager := agent.NewManager(mcpServer, cfg.LLM)
 
 	// 创建HTTP服务器
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
+
+	// 添加CORS中间件
+	router.Use(func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+		
+		c.Next()
+	})
 
 	// 健康检查端点
 	router.GET("/health", func(c *gin.Context) {
@@ -115,8 +155,8 @@ func main() {
 
 	// 手动设置路由
 	// 静态文件服务
-	router.Static("/static", cfg.UI.Static)
-	router.StaticFile("/", cfg.UI.Static+"/index.html")
+	router.Static("/static", cfg.Frontend.BuildDir)
+	router.StaticFile("/", cfg.Frontend.BuildDir+"/index.html")
 
 	// WebSocket路由
 	router.GET("/ws", func(c *gin.Context) {
@@ -130,6 +170,71 @@ func main() {
 			capabilities := agentManager.GetCapabilities()
 			c.JSON(http.StatusOK, gin.H{
 				"capabilities": capabilities,
+			})
+		})
+
+		// 前端期望的API端点
+		api.POST("/agent/process", func(c *gin.Context) {
+			var msg struct {
+				Message string `json:"message"`
+			}
+
+			if err := c.ShouldBindJSON(&msg); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+
+			ctx := context.Background()
+			req := agent.ProcessRequest{
+				SessionID: uuid.New().String(),
+				Message:   msg.Message,
+			}
+
+			response, err := agentManager.ProcessMessage(ctx, req)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+
+			c.JSON(http.StatusOK, response)
+		})
+
+		api.GET("/agent/poll/:sessionId", func(c *gin.Context) {
+			sessionId := c.Param("sessionId")
+
+			ctx := context.Background()
+			status, err := agentManager.GetWorkflowStatus(ctx, sessionId)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+
+			c.JSON(http.StatusOK, status)
+		})
+
+		api.POST("/agent/signature", func(c *gin.Context) {
+			var req struct {
+				SessionID string `json:"session_id"`
+				Signature string `json:"signature"`
+			}
+
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+
+			ctx := context.Background()
+			result, err := agentManager.ContinueWorkflowWithSignature(ctx, req.SessionID, req.Signature)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+
+			c.JSON(http.StatusOK, gin.H{
+				"status":      "signature_submitted",
+				"session_id":  req.SessionID,
+				"signature":   req.Signature,
+				"result":      result,
 			})
 		})
 
@@ -413,4 +518,5 @@ func waitForServices(services []string, registry *service.ServiceRegistry, timeo
 	}
 
 	log.Println("⚠️ 部分依赖服务未就绪，继续启动...")
+	log.Println("📋 注意: chain服务由mcp服务内部管理，不需要独立等待")
 }

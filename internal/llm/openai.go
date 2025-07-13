@@ -1,115 +1,105 @@
 package llm
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"log"
 	"net/http"
+	"qng_agent/internal/config"
+	"strings"
+	"time"
 )
 
 type OpenAIClient struct {
-	apiKey  string
-	baseURL string
-	model   string
-	client  *http.Client
+	config config.OpenAIConfig
+	client *http.Client
 }
 
 type OpenAIRequest struct {
-	Model    string          `json:"model"`
-	Messages []OpenAIMessage `json:"messages"`
-	Stream   bool            `json:"stream"`
-}
-
-type OpenAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Model    string    `json:"model"`
+	Messages []Message `json:"messages"`
+	MaxTokens int      `json:"max_tokens,omitempty"`
 }
 
 type OpenAIResponse struct {
-	Choices []OpenAIChoice `json:"choices"`
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
 }
 
-type OpenAIChoice struct {
-	Message OpenAIMessage `json:"message"`
-}
-
-func NewOpenAIClient(configs map[string]string) (*OpenAIClient, error) {
-	apiKey := configs["openai_api_key"]
-	if apiKey == "" {
-		return nil, fmt.Errorf("openai_api_key is required")
+func NewOpenAIClient(config config.OpenAIConfig) (Client, error) {
+	if config.APIKey == "" {
+		return NewMockClient(), nil
 	}
 
-	baseURL := configs["openai_base_url"]
-	if baseURL == "" {
-		baseURL = "https://api.openai.com/v1"
-	}
-
-	model := configs["model"]
-	if model == "" {
-		model = "gpt-4"
+	client := &http.Client{
+		Timeout: time.Duration(config.Timeout) * time.Second,
 	}
 
 	return &OpenAIClient{
-		apiKey:  apiKey,
-		baseURL: baseURL,
-		model:   model,
-		client:  &http.Client{},
+		config: config,
+		client: client,
 	}, nil
 }
 
 func (c *OpenAIClient) Chat(ctx context.Context, messages []Message) (string, error) {
-	// 转换消息格式
-	openaiMessages := make([]OpenAIMessage, len(messages))
-	for i, msg := range messages {
-		openaiMessages[i] = OpenAIMessage{
-			Role:    msg.Role,
-			Content: msg.Content,
-		}
+	log.Printf("🔍 OpenAI客户端诊断信息:")
+	log.Printf("  - API密钥长度: %d", len(c.config.APIKey))
+	log.Printf("  - BaseURL: %s", c.config.BaseURL)
+	log.Printf("  - Model: %s", c.config.Model)
+	log.Printf("  - Timeout: %d", c.config.Timeout)
+	
+	if c.config.APIKey == "" || c.config.BaseURL == "" {
+		log.Printf("⚠️  使用模拟客户端 (API密钥或BaseURL为空)")
+		mockClient := NewMockClient()
+		return mockClient.Chat(ctx, messages)
 	}
 
-	request := OpenAIRequest{
-		Model:    c.model,
-		Messages: openaiMessages,
-		Stream:   false,
+	requestBody := OpenAIRequest{
+		Model:     c.config.Model,
+		Messages:  messages,
+		MaxTokens: c.config.MaxTokens,
 	}
 
-	reqBody, err := json.Marshal(request)
+	jsonData, err := json.Marshal(requestBody)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/chat/completions", bytes.NewBuffer(reqBody))
+	url := c.config.BaseURL + "/chat/completions"
+	log.Printf("🌐 请求URL: %s", url)
+	
+	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(jsonData)))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to make request: %w", err)
+		return "", fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("API error: %d %s", resp.StatusCode, string(body))
-	}
-
 	var response OpenAIResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		return "", fmt.Errorf("failed to unmarshal response: %w", err)
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return "", fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if response.Error != nil {
+		return "", fmt.Errorf("OpenAI API error: %s", response.Error.Message)
 	}
 
 	if len(response.Choices) == 0 {
-		return "", fmt.Errorf("no choices in response")
+		return "", fmt.Errorf("no response from OpenAI")
 	}
 
 	return response.Choices[0].Message.Content, nil

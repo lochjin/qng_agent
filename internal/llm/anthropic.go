@@ -2,32 +2,95 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"qng_agent/internal/config"
+	"strings"
+	"time"
 )
 
 type AnthropicClient struct {
-	apiKey string
-	model  string
+	config config.AnthropicConfig
+	client *http.Client
 }
 
-func NewAnthropicClient(configs map[string]string) (*AnthropicClient, error) {
-	apiKey := configs["anthropic_api_key"]
-	if apiKey == "" {
-		return nil, fmt.Errorf("anthropic_api_key is required")
+type AnthropicRequest struct {
+	Model    string    `json:"model"`
+	Messages []Message `json:"messages"`
+	MaxTokens int      `json:"max_tokens,omitempty"`
+}
+
+type AnthropicResponse struct {
+	Content []struct {
+		Text string `json:"text"`
+	} `json:"content"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
+func NewAnthropicClient(config config.AnthropicConfig) (Client, error) {
+	if config.APIKey == "" {
+		return NewMockClient(), nil
 	}
 
-	model := configs["model"]
-	if model == "" {
-		model = "claude-3-sonnet-20240229"
+	client := &http.Client{
+		Timeout: time.Duration(config.Timeout) * time.Second,
 	}
 
 	return &AnthropicClient{
-		apiKey: apiKey,
-		model:  model,
+		config: config,
+		client: client,
 	}, nil
 }
 
 func (c *AnthropicClient) Chat(ctx context.Context, messages []Message) (string, error) {
-	// 简化实现，实际使用时需要调用Anthropic API
-	return "Anthropic client not implemented yet", nil
+	if c.config.APIKey == "" {
+		// 如果没有API密钥，使用模拟客户端
+		mockClient := NewMockClient()
+		return mockClient.Chat(ctx, messages)
+	}
+
+	requestBody := AnthropicRequest{
+		Model:     c.config.Model,
+		Messages:  messages,
+		MaxTokens: 2000,
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	url := "https://api.anthropic.com/v1/messages"
+	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(jsonData)))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", c.config.APIKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var response AnthropicResponse
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return "", fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if response.Error != nil {
+		return "", fmt.Errorf("Anthropic API error: %s", response.Error.Message)
+	}
+
+	if len(response.Content) == 0 {
+		return "", fmt.Errorf("no response from Anthropic")
+	}
+
+	return response.Content[0].Text, nil
 }
