@@ -1,0 +1,34 @@
+llm:
+  provider: "openai"  # 可选: openai, anthropic, ollama, gemini
+  configs:
+    # OpenAI 配置
+    openai_api_key: "YOUR_OPENAI_API_KEY"
+    openai_base_url: "https://api.openai.com/v1"
+    
+    # Anthropic 配置
+    anthropic_api_key: "YOUR_ANTHROPIC_API_KEY"
+    
+    # Ollama 配置
+    ollama_base_url: "http://localhost:11434"
+    
+    # Gemini 配置
+    gemini_api_key: "YOUR_GEMINI_API_KEY"
+    gemini_base_url: "https://generativelanguage.googleapis.com/v1beta"
+    
+    # 通用配置
+    model: "gpt-4"  # 根据provider选择对应模型
+
+mcp:
+  timeout: 30
+
+qng:
+  chain_rpc: "http://localhost:8545"
+  graph_nodes: 5
+  poll_interval: 1000
+
+metamask:
+  network: "ethereum"
+
+ui:
+  port: 9090
+  static: "./web/dist" 
