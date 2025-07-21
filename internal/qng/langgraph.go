@@ -5,14 +5,20 @@ import (
 	"fmt"
 	"log"
 	"qng_agent/internal/llm"
+	"qng_agent/internal/contracts"
+	"qng_agent/internal/config"
+	"qng_agent/internal/rpc"
 	"time"
 )
 
 // LangGraph 节点系统
 type LangGraph struct {
-	nodes map[string]Node
-	edges map[string][]string
-	llm   llm.Client
+	nodes           map[string]Node
+	edges           map[string][]string
+	llm             llm.Client
+	contractManager *contracts.ContractManager
+	rpcClient       *rpc.Client
+	txConfig        config.TransactionConfig
 }
 
 // Node 节点接口
@@ -38,11 +44,14 @@ type NodeOutput struct {
 }
 
 // NewLangGraph 创建LangGraph实例
-func NewLangGraph(llmClient llm.Client) *LangGraph {
+func NewLangGraph(llmClient llm.Client, contractManager *contracts.ContractManager, rpcClient *rpc.Client, txConfig config.TransactionConfig) *LangGraph {
 	lg := &LangGraph{
-		nodes: make(map[string]Node),
-		edges: make(map[string][]string),
-		llm:   llmClient,
+		nodes:           make(map[string]Node),
+		edges:           make(map[string][]string),
+		llm:             llmClient,
+		contractManager: contractManager,
+		rpcClient:       rpcClient,
+		txConfig:        txConfig,
 	}
 
 	// 注册节点
@@ -60,13 +69,13 @@ func (lg *LangGraph) registerNodes() {
 	lg.nodes["task_decomposer"] = NewTaskDecomposerNode(lg.llm)
 	
 	// 交易执行节点
-	lg.nodes["swap_executor"] = NewSwapExecutorNode()
+	lg.nodes["swap_executor"] = NewSwapExecutorNode(lg.contractManager)
 	
 	// 质押执行节点
-	lg.nodes["stake_executor"] = NewStakeExecutorNode()
+	lg.nodes["stake_executor"] = NewStakeExecutorNode(lg.contractManager)
 	
 	// 签名验证节点
-	lg.nodes["signature_validator"] = NewSignatureValidatorNode()
+	lg.nodes["signature_validator"] = NewSignatureValidatorNode(lg.rpcClient, lg.txConfig)
 	
 	// 结果聚合节点
 	lg.nodes["result_aggregator"] = NewResultAggregatorNode()
@@ -174,7 +183,7 @@ func (lg *LangGraph) executeNode(ctx context.Context, nodeName string, input Nod
 }
 
 // ContinueWithSignature 使用签名继续工作流
-func (lg *LangGraph) ContinueWithSignature(ctx context.Context, workflowContext any, signature string) (any, error) {
+func (lg *LangGraph) ContinueWithSignature(ctx context.Context, workflowContext any, signature string) (*ProcessResult, error) {
 	log.Printf("🔄 使用签名继续工作流")
 	log.Printf("🔐 签名长度: %d", len(signature))
 	
@@ -227,9 +236,12 @@ func (lg *LangGraph) ContinueWithSignature(ctx context.Context, workflowContext 
 		}
 
 		log.Printf("✅ 继续执行成功")
-		return result.FinalResult, nil
+		// 返回完整的 ProcessResult，而不是只返回 FinalResult
+		return result, nil
 	}
 
 	log.Printf("✅ 没有下一个节点，返回当前数据")
-	return nodeOutput.Data, nil
+	return &ProcessResult{
+		FinalResult: nodeOutput.Data,
+	}, nil
 } 

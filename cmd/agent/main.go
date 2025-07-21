@@ -120,11 +120,11 @@ func main() {
 	log.Println("  - Chain功能由QNG服务提供")
 	waitForServices([]string{"mcp"}, registry, 30*time.Second)
 
-	// 创建MCP服务器
-	mcpServer := mcp.NewServer(cfg.MCP)
+	// 创建MCP HTTP客户端
+	mcpClient := mcp.NewHTTPClient(cfg.MCP)
 
 	// 初始化Agent管理器
-	agentManager := agent.NewManager(mcpServer, cfg.LLM)
+	agentManager := agent.NewManager(mcpClient, cfg.LLM)
 
 	// 创建HTTP服务器
 	gin.SetMode(gin.ReleaseMode)
@@ -196,7 +196,17 @@ func main() {
 				return
 			}
 
-			c.JSON(http.StatusOK, response)
+			// 添加 session_id 到响应中，确保前端兼容性
+			result := gin.H{
+				"response":    response.Response,
+				"need_action": response.NeedAction,
+				"action_type": response.ActionType,
+				"action_data": response.ActionData,
+				"workflow_id": response.WorkflowID,
+				"session_id":  response.WorkflowID, // 为前端兼容性添加
+			}
+
+			c.JSON(http.StatusOK, result)
 		})
 
 		api.GET("/agent/poll/:sessionId", func(c *gin.Context) {
@@ -303,10 +313,42 @@ func main() {
 				"result":      result,
 			})
 
-			// 通知所有连接的客户端工作流状态更新
-			broadcastWorkflowUpdate(workflowID, "signature_received", 60, "签名已提交，继续执行工作流...")
+					// 通知所有连接的客户端工作流状态更新
+		broadcastWorkflowUpdate(workflowID, "signature_received", 60, "签名已提交，继续执行工作流...")
+	})
+
+	// 配置管理API
+	api.GET("/config", func(c *gin.Context) {
+		// 读取当前配置文件
+		cfg, err := config.Load()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load config: " + err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, cfg)
+	})
+
+	api.PUT("/config", func(c *gin.Context) {
+		var newConfig config.Config
+		if err := c.ShouldBindJSON(&newConfig); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid config format: " + err.Error()})
+			return
+		}
+
+		// 保存配置到文件
+		if err := config.Save(&newConfig); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save config: " + err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"message": "配置保存成功",
+			"status":  "success",
+			"note":    "某些配置更改可能需要重启服务才能生效",
 		})
-	}
+	})
+}
 
 	// 启动HTTP服务器
 	server := &http.Server{

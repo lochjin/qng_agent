@@ -105,6 +105,8 @@ func (s *Server) setupRoutes() {
 		api.POST("/chat", s.handleChat)
 		api.GET("/workflow/:id/status", s.getWorkflowStatus)
 		api.POST("/workflow/:id/signature", s.submitSignature)
+		api.GET("/config", s.getConfig)
+		api.PUT("/config", s.updateConfig)
 		api.GET("/settings", s.getSettings)
 		api.PUT("/settings", s.updateSettings)
 		api.GET("/settings/mcp", s.getMCPSettings)
@@ -428,6 +430,37 @@ func (s *Server) updateMCPSettings(c *gin.Context) {
 		"message": "MCP settings updated successfully",
 		"status":  "success",
 		"note":    "Some changes may require restart",
+	})
+}
+
+func (s *Server) getConfig(c *gin.Context) {
+	// 读取当前配置文件
+	cfg, err := config.Load()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load config: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, cfg)
+}
+
+func (s *Server) updateConfig(c *gin.Context) {
+	var newConfig config.Config
+	if err := c.ShouldBindJSON(&newConfig); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid config format: " + err.Error()})
+		return
+	}
+
+	// 保存配置到文件
+	if err := config.Save(&newConfig); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save config: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "配置保存成功",
+		"status":  "success",
+		"note":    "某些配置更改可能需要重启服务才能生效",
 	})
 }
 

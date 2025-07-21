@@ -12,7 +12,7 @@ import (
 )
 
 type Manager struct {
-	mcpServer *mcp.Server
+	mcpClient mcp.ServerInterface
 	llmClient llm.Client
 	sessions  map[string]*Session
 }
@@ -43,14 +43,14 @@ type ProcessResponse struct {
 	WorkflowID string `json:"workflow_id,omitempty"`
 }
 
-func NewManager(mcpServer *mcp.Server, llmConfig config.LLMConfig) *Manager {
+func NewManager(mcpClient mcp.ServerInterface, llmConfig config.LLMConfig) *Manager {
 	llmClient, err := llm.NewClient(llmConfig)
 	if err != nil {
 		log.Fatal("Failed to create LLM client:", err)
 	}
 
 	return &Manager{
-		mcpServer: mcpServer,
+		mcpClient: mcpClient,
 		llmClient: llmClient,
 		sessions:  make(map[string]*Session),
 	}
@@ -94,7 +94,7 @@ func (m *Manager) ProcessMessage(ctx context.Context, req ProcessRequest) (*Proc
 	if toolInfo.IsQNGWorkflow {
 		// 调用QNG工作流
 		log.Printf("调用QNG工作流，消息: %s", req.Message)
-		result, err := m.mcpServer.Call(ctx, "qng", "execute_workflow", map[string]any{
+		result, err := m.mcpClient.Call(ctx, "qng", "execute_workflow", map[string]any{
 			"message": req.Message,
 		})
 		if err != nil {
@@ -114,7 +114,7 @@ func (m *Manager) ProcessMessage(ctx context.Context, req ProcessRequest) (*Proc
 
 	// 调用其它MCP工具
 	log.Printf("调用MCP工具，服务器: %s, 工具: %s", toolInfo.ServerName, toolInfo.ToolName)
-	result, err := m.mcpServer.Call(ctx, toolInfo.ServerName, toolInfo.ToolName, toolInfo.Parameters)
+	result, err := m.mcpClient.Call(ctx, toolInfo.ServerName, toolInfo.ToolName, toolInfo.Parameters)
 	if err != nil {
 		log.Printf("MCP工具调用失败: %v", err)
 		return nil, fmt.Errorf("MCP tool call failed: %w", err)
@@ -221,19 +221,97 @@ func (m *Manager) buildLLMMessages(session *Session) []llm.Message {
 }
 
 func (m *Manager) GetWorkflowStatus(ctx context.Context, workflowID string) (*mcp.WorkflowStatus, error) {
-	result, err := m.mcpServer.Call(ctx, "qng", "get_session_status", map[string]any{"session_id": workflowID})
+	result, err := m.mcpClient.Call(ctx, "qng", "get_session_status", map[string]any{"session_id": workflowID})
 	if err != nil {
 		return nil, err
 	}
-	status, ok := result.(*mcp.WorkflowStatus)
-	if !ok {
-		return nil, fmt.Errorf("invalid workflow status type: %T", result)
+	
+	// 处理从 HTTP 响应解析的结果
+	var status mcp.WorkflowStatus
+	if resultMap, ok := result.(map[string]interface{}); ok {
+		// 从 map 转换为 WorkflowStatus 结构体
+		if statusStr, exists := resultMap["status"]; exists {
+			if s, ok := statusStr.(string); ok {
+				status.Status = s
+			}
+		}
+		if progressFloat, exists := resultMap["progress"]; exists {
+			if p, ok := progressFloat.(float64); ok {
+				status.Progress = int(p)
+			}
+		}
+		if message, exists := resultMap["message"]; exists {
+			if m, ok := message.(string); ok {
+				status.Message = m
+			}
+		}
+		if sessionID, exists := resultMap["session_id"]; exists {
+			if sid, ok := sessionID.(string); ok {
+				status.SessionID = sid
+			}
+		}
+		if needSig, exists := resultMap["need_signature"]; exists {
+			if ns, ok := needSig.(bool); ok {
+				status.NeedSignature = ns
+			}
+		}
+		if sigReq, exists := resultMap["signature_request"]; exists {
+			if sr, ok := sigReq.(map[string]interface{}); ok {
+				sigRequest := &mcp.SignatureRequest{}
+				if action, ok := sr["action"].(string); ok {
+					sigRequest.Action = action
+				}
+				if fromToken, ok := sr["from_token"].(string); ok {
+					sigRequest.FromToken = fromToken
+				}
+				if toToken, ok := sr["to_token"].(string); ok {
+					sigRequest.ToToken = toToken
+				}
+				if amount, ok := sr["amount"].(string); ok {
+					sigRequest.Amount = amount
+				}
+				if toAddr, ok := sr["to_address"].(string); ok {
+					sigRequest.ToAddress = toAddr
+				}
+				if value, ok := sr["value"].(string); ok {
+					sigRequest.Value = value
+				}
+				if data, ok := sr["data"].(string); ok {
+					sigRequest.Data = data
+				}
+				if gasLimit, ok := sr["gas_limit"].(string); ok {
+					sigRequest.GasLimit = gasLimit
+				}
+				if gasPrice, ok := sr["gas_price"].(string); ok {
+					sigRequest.GasPrice = gasPrice
+				}
+				if gasFee, ok := sr["gas_fee"].(string); ok {
+					sigRequest.GasFee = gasFee
+				}
+				if slippage, ok := sr["slippage"].(string); ok {
+					sigRequest.Slippage = slippage
+				}
+				status.SignatureRequest = sigRequest
+			}
+		}
+		if resultData, exists := resultMap["result"]; exists {
+			if rd, ok := resultData.(map[string]interface{}); ok {
+				status.Result = rd
+			}
+		}
+		if errorStr, exists := resultMap["error"]; exists {
+			if e, ok := errorStr.(string); ok {
+				status.Error = e
+			}
+		}
+		return &status, nil
 	}
-	return status, nil
+	
+	return nil, fmt.Errorf("invalid workflow status type: %T", result)
 }
 
 func (m *Manager) ContinueWorkflowWithSignature(ctx context.Context, workflowID, signature string) (any, error) {
-	return m.mcpServer.Call(ctx, "qng", "submit_signature", map[string]any{"session_id": workflowID, "signature": signature})
+	return m.mcpClient.Call(ctx, "qng", "submit_signature", map[string]any{"session_id": workflowID, "signature": signature})
 }
 
 func (m *Manager) GetCapabilities() map[string]any {

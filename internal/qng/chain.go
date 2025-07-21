@@ -6,15 +6,19 @@ import (
 	"log"
 	"qng_agent/internal/config"
 	"qng_agent/internal/llm"
+	"qng_agent/internal/contracts"
+	"qng_agent/internal/rpc"
 	"sync"
 )
 
 type Chain struct {
-	config    config.QNGConfig
-	llmClient llm.Client
-	langGraph *LangGraph
-	mu        sync.RWMutex
-	running   bool
+	config          config.QNGConfig
+	llmClient       llm.Client
+	contractManager *contracts.ContractManager
+	rpcClient       *rpc.Client
+	langGraph       *LangGraph
+	mu              sync.RWMutex
+	running         bool
 }
 
 type ProcessResult struct {
@@ -38,13 +42,31 @@ func NewChain(config config.QNGConfig) *Chain {
 		}
 	}
 
+	// 创建合约管理器
+	contractManager, err := contracts.NewContractManager("config/contracts.json")
+	if err != nil {
+		log.Printf("⚠️  无法创建合约管理器: %v", err)
+		contractManager = nil
+	}
+
+	// 创建RPC客户端
+	var rpcClient *rpc.Client
+	if config.Chain.RPCURL != "" {
+		rpcClient = rpc.NewClient(config.Chain.RPCURL)
+		log.Printf("✅ RPC客户端已创建: %s", config.Chain.RPCURL)
+	} else {
+		log.Printf("⚠️  未配置RPC URL，使用模拟确认")
+	}
+
 	// 创建LangGraph
-	langGraph := NewLangGraph(llmClient)
+	langGraph := NewLangGraph(llmClient, contractManager, rpcClient, config.Chain.Transaction)
 
 	chain := &Chain{
-		config:    config,
-		llmClient: llmClient,
-		langGraph: langGraph,
+		config:          config,
+		llmClient:       llmClient,
+		contractManager: contractManager,
+		rpcClient:       rpcClient,
+		langGraph:       langGraph,
 	}
 
 	return chain
@@ -82,7 +104,7 @@ func (c *Chain) ProcessMessage(ctx context.Context, message string) (*ProcessRes
 	return result, nil
 }
 
-func (c *Chain) ContinueWithSignature(ctx context.Context, workflowContext any, signature string) (any, error) {
+func (c *Chain) ContinueWithSignature(ctx context.Context, workflowContext any, signature string) (*ProcessResult, error) {
 	log.Printf("🔄 QNG Chain使用签名继续工作流")
 	log.Printf("🔐 签名长度: %d", len(signature))
 	

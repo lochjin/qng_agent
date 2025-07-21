@@ -110,9 +110,10 @@ func (s *QNGServer) executeWorkflow(ctx context.Context, params map[string]any) 
 		CancelChan:   make(chan bool, 1),
 	}
 	
-	// 保存会话
+	// 保存会话（同时使用 sessionID 和 workflowID 作为 key）
 	s.sessionsMu.Lock()
 	s.sessions[sessionID] = session
+	s.sessions[workflowID] = session  // 允许通过 workflowID 查询
 	s.sessionsMu.Unlock()
 	
 	log.Printf("✅ 创建会话: %s", sessionID)
@@ -153,6 +154,75 @@ func (s *QNGServer) executeWorkflowAsync(session *Session, message string) {
 	if result.NeedSignature {
 		log.Printf("✍️  需要用户签名")
 		session.Context = result.WorkflowContext
+		
+		// 将签名请求转换为正确的类型并保存
+		if sigReq, ok := result.SignatureRequest.(map[string]interface{}); ok {
+			signatureRequest := &SignatureRequest{}
+			if action, exists := sigReq["action"]; exists {
+				if actionStr, ok := action.(string); ok {
+					signatureRequest.Action = actionStr
+				}
+			}
+			if fromToken, exists := sigReq["from_token"]; exists {
+				if fromTokenStr, ok := fromToken.(string); ok {
+					signatureRequest.FromToken = fromTokenStr
+				}
+			}
+			if toToken, exists := sigReq["to_token"]; exists {
+				if toTokenStr, ok := toToken.(string); ok {
+					signatureRequest.ToToken = toTokenStr
+				}
+			}
+			if amount, exists := sigReq["amount"]; exists {
+				if amountStr, ok := amount.(string); ok {
+					signatureRequest.Amount = amountStr
+				}
+			}
+			if gasFee, exists := sigReq["gas_fee"]; exists {
+				if gasFeeStr, ok := gasFee.(string); ok {
+					signatureRequest.GasFee = gasFeeStr
+				}
+			}
+			if slippage, exists := sigReq["slippage"]; exists {
+				if slippageStr, ok := slippage.(string); ok {
+					signatureRequest.Slippage = slippageStr
+				}
+			}
+			// 添加区块链交易必需字段
+			if toAddress, exists := sigReq["to_address"]; exists {
+				if toAddressStr, ok := toAddress.(string); ok {
+					signatureRequest.ToAddress = toAddressStr
+				}
+			}
+			if value, exists := sigReq["value"]; exists {
+				if valueStr, ok := value.(string); ok {
+					signatureRequest.Value = valueStr
+				}
+			}
+			if data, exists := sigReq["data"]; exists {
+				if dataStr, ok := data.(string); ok {
+					signatureRequest.Data = dataStr
+				}
+			}
+			if gasLimit, exists := sigReq["gas_limit"]; exists {
+				if gasLimitStr, ok := gasLimit.(string); ok {
+					signatureRequest.GasLimit = gasLimitStr
+				}
+			}
+			if gasPrice, exists := sigReq["gas_price"]; exists {
+				if gasPriceStr, ok := gasPrice.(string); ok {
+					signatureRequest.GasPrice = gasPriceStr
+				}
+			}
+			session.SignatureRequest = signatureRequest
+			
+			log.Printf("✅ 签名请求已保存到会话")
+			log.Printf("📋 签名请求详情: action=%s, from=%s->%s, amount=%s", 
+				signatureRequest.Action, signatureRequest.FromToken, signatureRequest.ToToken, signatureRequest.Amount)
+			log.Printf("📋 交易数据: to=%s, value=%s, data=%s", 
+				signatureRequest.ToAddress, signatureRequest.Value, signatureRequest.Data)
+		}
+		
 		s.updateSessionStatus(session, "waiting_signature", "等待用户签名授权")
 		
 		// 发送签名请求
@@ -189,14 +259,22 @@ func (s *QNGServer) getSessionStatus(ctx context.Context, params map[string]any)
 	
 	log.Printf("✅ 返回会话状态: %s", session.Status)
 	
-	return map[string]any{
+	result := map[string]any{
 		"session_id":  session.ID,
 		"workflow_id": session.WorkflowID,
 		"status":      session.Status,
 		"message":     session.Message,
 		"created_at":  session.CreatedAt,
 		"updated_at":  session.UpdatedAt,
-	}, nil
+		"need_signature": session.Status == "waiting_signature",
+	}
+	
+	// 如果需要签名，添加签名请求数据
+	if session.Status == "waiting_signature" && session.SignatureRequest != nil {
+		result["signature_request"] = session.SignatureRequest
+	}
+	
+	return result, nil
 }
 
 func (s *QNGServer) submitSignature(ctx context.Context, params map[string]any) (any, error) {
@@ -261,13 +339,79 @@ func (s *QNGServer) continueWorkflowWithSignature(session *Session, signature st
 		return
 	}
 	
+	// 检查是否需要新的签名请求
+	if result.NeedSignature {
+		log.Printf("🔔 检测到新的签名请求")
+		
+		// 保存工作流上下文
+		session.Context = result.WorkflowContext
+		
+		// 处理签名请求
+		if sigReq, ok := result.SignatureRequest.(map[string]any); ok {
+			signatureRequest := &SignatureRequest{}
+			if action, exists := sigReq["action"]; exists {
+				if actionStr, ok := action.(string); ok {
+					signatureRequest.Action = actionStr
+				}
+			}
+			if token, exists := sigReq["token"]; exists {
+				if tokenStr, ok := token.(string); ok {
+					signatureRequest.ToToken = tokenStr
+				}
+			}
+			if amount, exists := sigReq["amount"]; exists {
+				if amountStr, ok := amount.(string); ok {
+					signatureRequest.Amount = amountStr
+				}
+			}
+			if toAddress, exists := sigReq["to_address"]; exists {
+				if addressStr, ok := toAddress.(string); ok {
+					signatureRequest.ToAddress = addressStr
+				}
+			}
+			if value, exists := sigReq["value"]; exists {
+				if valueStr, ok := value.(string); ok {
+					signatureRequest.Value = valueStr
+				}
+			}
+			if data, exists := sigReq["data"]; exists {
+				if dataStr, ok := data.(string); ok {
+					signatureRequest.Data = dataStr
+				}
+			}
+			if gasLimit, exists := sigReq["gas_limit"]; exists {
+				if gasLimitStr, ok := gasLimit.(string); ok {
+					signatureRequest.GasLimit = gasLimitStr
+				}
+			}
+			if gasPrice, exists := sigReq["gas_price"]; exists {
+				if gasPriceStr, ok := gasPrice.(string); ok {
+					signatureRequest.GasPrice = gasPriceStr
+				}
+			}
+			session.SignatureRequest = signatureRequest
+			
+			log.Printf("✅ 新签名请求已保存到会话")
+			log.Printf("📋 签名请求详情: action=%s, token=%s, amount=%s", 
+				signatureRequest.Action, signatureRequest.ToToken, signatureRequest.Amount)
+			log.Printf("📋 交易数据: to=%s, value=%s, data=%s", 
+				signatureRequest.ToAddress, signatureRequest.Value, signatureRequest.Data)
+		}
+		
+		s.updateSessionStatus(session, "waiting_signature", "等待用户签名授权")
+		
+		// 发送签名请求
+		s.sendSessionUpdate(session, "signature_request", result.SignatureRequest)
+		return
+	}
+	
 	// 工作流完成
 	log.Printf("✅ 工作流执行完成")
-	session.Result = result
+	session.Result = result.FinalResult
 	s.updateSessionStatus(session, "completed", "工作流执行完成")
 	
 	// 发送结果
-	s.sendSessionUpdate(session, "result", result)
+	s.sendSessionUpdate(session, "result", result.FinalResult)
 }
 
 func (s *QNGServer) pollSession(ctx context.Context, params map[string]any) (any, error) {
